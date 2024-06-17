@@ -1,10 +1,13 @@
 """
+Layers for CAIRE.
+
+This file contains customized neural network layers for use in CAIRE.
+
 Code organization:
 NN layers:
-    - SeqEmbed: layer for mapping individual sequences to sequence representations.
-    - SeqEmbedToRepertoireEmbed: layer for mapping sequence representations to repertoire representations.
-    - RepertoireEmbedToSelectionEmbed: layer for mapping repertoire representations to selection representations.
-    - SelectionEmbedToRepertoireEmbed: layer for mapping selection representations to repertoire representations.
+    - KmerEmbed: layer for mapping individual sequences to a vector of kmer counts.
+    - SeqEmbed: layer for mapping individual sequences to sequence representations, using e.g. a neural network.
+    - AttentionReduce: layer for mapping sequence representations to a single vector per repertoire.
 """
 
 import pandas as pd
@@ -19,6 +22,7 @@ def one_hot(data, num_letter, dtype=torch.float32):
 
 
 class KmerEmbed(nn.Module):
+    """Layer for representing sequences as a vector of kmer counts."""
     def __init__(self, num_length, alphabet, kmer_length, custom_kmers=None, dtype=torch.float32, cuda=False):
         """Initialization"""
         super().__init__()
@@ -48,7 +52,7 @@ class KmerEmbed(nn.Module):
             self.kmers = kmers.reshape([-1, kmer_length])
 
         else:
-            # Load custom kmers.
+            # Count only pre-specified "custom" kmers.
             self.kmers = custom_kmers.to(dtype=torch.long, device=self.device)
 
         self.n_kmers = self.kmers.shape[0]

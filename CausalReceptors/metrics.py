@@ -1,4 +1,8 @@
-"""Metrics for evaluating models."""
+"""Metrics for evaluating models.
+
+These are essentially the sklearn metrics, only made robust to missing or degenerate data.
+
+"""
 import numpy as np
 import torch
 
@@ -41,6 +45,8 @@ def r2_score(y_true, y_pred, base_var=None):
     if len(y_true) == 0:
         return np.nan
     elif base_var is not None:
+        # In some cases the baseline variance can be computed from a larger sample,
+        # which helps stabilize the estimate of the R2 score.
         return 1. - ((y_true - y_pred)**2).mean()/base_var
     else:
         return skl_metrics.r2_score(y_true, y_pred)
