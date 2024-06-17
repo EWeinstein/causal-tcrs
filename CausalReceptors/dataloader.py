@@ -1,3 +1,17 @@
+"""
+Data loading for CAIRE.
+
+This file contains tools for loading datasets during training and evaluation of the CAIRE model.
+It implements a "double minibatching" strategy, where both patients and sequences are batched.
+
+Code organization:
+ - RepertoiresDataset: The main dataloader for CAIRE training.
+ - BindingDataset: A dataloader for sequences with binding information.
+ - RepertoireTensorDataset: A dataloader for a single repertoire. Used in semisynthetic dataset creation.
+ - DataFeatures: A function for transferring sequences to the gpu and featurizing them (one-hot encoding, etc.)
+"""
+
+
 import pandas as pd
 import h5py
 from io import StringIO
@@ -15,19 +29,15 @@ def tots_to_inds(tots):
 
 
 class RepertoiresDataset(tdata.Dataset):
-
+    "The main dataloader for training the CAIRE model (select_outcome_model.py)"
     def __init__(self, file, outcome_type='binary', flip_outcome=False, mean_subtract=True, seq_batch=10000,
                  uniform_sample_seq=False, generator=None,
-                 dtype=torch.float32, cuda_data=False, cuda=False, synthetic_test=False,
+                 dtype=torch.float32, cuda=False, synthetic_test=False,
                  deterministic_batch=False):
 
         super().__init__()
 
-        # Deprecated: cuda_data = True.
-        if cuda_data:
-            self.device = 'cuda'
-        else:
-            self.device = 'cpu'
+        self.device = 'cpu'
         self.outcome_type = outcome_type
         self.flip_outcome = flip_outcome
 
@@ -54,15 +64,16 @@ class RepertoiresDataset(tdata.Dataset):
         self.seq_ind = tots_to_inds(self.tot_seqs_per_patient)
         self.mature_counts = None
         if 'mature_counts' in self.h5f:
-            # Deprecated option.
+            # Load counts of each repertoire sequence.
             self.mature_counts = torch.tensor(self.h5f['mature_counts'][:], dtype=torch.float32, device=self.device)
             self.mature_totals = torch.zeros(self.tot_patients, dtype=torch.float32, device=self.device)
             for i in range(self.tot_patients):
                 self.mature_totals[i] = self.mature_counts[self.seq_ind[i]:self.seq_ind[i+1]].sum()
         elif 'productive_freq' in self.h5f:
-            # Use clonotype frequencies for weighting.
+            # Use clonotype frequencies for weighting, rather than counts.
             self.mature_counts = torch.tensor(self.h5f['productive_freq'][:], dtype=torch.float32, device=self.device)
-            # Use number of clonotypes as a rough guess for the number of cells.
+            # Use number of clonotypes as a very rough guess for the number of cells (for the purposes
+            # of weighting log likelihoods in the model).
             self.mature_totals = self.tot_seqs_per_patient
         else:
             self.mature_totals = self.tot_seqs_per_patient
@@ -82,12 +93,11 @@ class RepertoiresDataset(tdata.Dataset):
             # Mean subtract
             if mean_subtract:
                 self.outcomes = self.outcomes - self.outcomes.mean()
-            # Option to flip sign.
+            # Option to flip sign (e.g. so that good patient outcomes are positive).
             if flip_outcome:
                 self.outcomes = -self.outcomes
-            # TODO: option to divide by standard deviation?
 
-        # Set up uniform sampling of repertoire, as opposed to clonotype sampling.
+        # Set up uniform sampling of repertoire, as opposed to weighting by clonotype frequency.
         self.uniform_sample_seq = uniform_sample_seq
         if uniform_sample_seq and (self.mature_counts is not None):
             self.uniform_counts = torch.ones_like(self.mature_counts)
@@ -97,7 +107,7 @@ class RepertoiresDataset(tdata.Dataset):
                         self.mature_counts[self.seq_ind[i]:self.seq_ind[i+1]].sum())
 
         # Pin big data tensors to memory for fast cpu->gpu transfer.
-        if cuda and not cuda_data:
+        if cuda:
             self.mature_seqs.pin_memory()
             self.naive_seqs.pin_memory()
             self.outcomes.pin_memory()
@@ -115,8 +125,9 @@ class RepertoiresDataset(tdata.Dataset):
     def get_batch(self, seqs, start_indx, end_indx, seq_counts=None, patient_i=0):
         """Subsample a batch of sequences from a repertoire."""
         if self.seq_batch > -1:
-            # Take random batch.
+            # Sample a batch.
             if self.uniform_sample_seq and (seq_counts is not None):
+                # Sample a batch, with probability corresponding to sequence frequency.
                 if not self.deterministic_batch:
                     seq_indx = (torch.multinomial(seq_counts[start_indx:end_indx],
                                                   self.seq_batch, replacement=True) + start_indx
@@ -157,7 +168,7 @@ class RepertoiresDataset(tdata.Dataset):
         outcomes = self.outcomes[i]
 
         if self.synthetic_test:
-            # Basic synthetic data test for the outcome model. Inject motifs for positive class.
+            # Simple synthetic data test for the outcome model: inject motifs for positive class.
             if torch.allclose(outcomes[1], torch.tensor(1., device=self.device)):
                 matures[:100, 2:6] = torch.tensor([1, 2, 3, 4], dtype=torch.int8, device=self.device)
 
@@ -181,6 +192,8 @@ class BindingDataset(tdata.Dataset):
         self.seqs = torch.tensor(self.h5f[bind_name]['seq_aa'][:],
                                  dtype=torch.int8, device=self.device)
         # Load hit/nonhit labels.
+        # Note: sequences collected by unbiased repertoire sequencing are given the "0" label, rather
+        # than missing a label/using NaN.
         self.hits = torch.tensor(self.h5f[bind_name]['hits'][:],
                                  dtype=torch.int8, device=self.device)
 
@@ -219,106 +232,6 @@ class BindingDataset(tdata.Dataset):
     def __getitem__(self, i):
         """Get sequence i info (amino acid sequence and hit label)."""
         return self.seqs[i], self.hits[i]
-
-
-# Deprecated.
-class DeepRCDataset(tdata.Dataset):
-    def __init__(self, repertoire_file, outcome_file, seq_batch=10000, generator=None, dtype=torch.float32, cuda_data=False, cuda=False,
-                 synthetic_test=False):
-        super().__init__()
-
-        if cuda_data:
-            self.device = 'cuda'
-        else:
-            self.device = 'cpu'
-
-        # Sequence batching.
-        self.seq_batch = seq_batch
-
-        # Load h5py file.
-        self.h5f = h5py.File(repertoire_file, 'r')
-
-        # Load csv file.
-        self.outcome_dataset = pd.read_csv(outcome_file, sep='\t', header=0, dtype=str)
-        self.cmv_status = self.outcome_dataset['Known CMV status']
-
-        # Confirm indices line up.
-        pd_subjects = list(self.outcome_dataset['Subject ID'][:])
-        h5_subjects = [el.decode('utf-8').split('.')[0] for el in self.h5f['metadata']['sample_keys'][:]]
-        for a, b in zip(h5_subjects, pd_subjects):
-            assert a == b, 'File indices do not line up'
-
-        # Load repertoire metadata.
-        self.tot_patients = self.h5f['metadata']['n_samples'][()]
-        self.aa_alphabet = self.h5f['metadata']['aas'][()].decode('utf-8') + '*'
-        self.repertoire_alphabet = self.aa_alphabet
-
-        # Mature repertoire.
-        seq_start_end = torch.tensor(self.h5f['sampledata']['sample_sequences_start_end'][:])
-        self.tot_seqs_per_patient = seq_start_end[:, 1] - seq_start_end[:, 0]
-        self.seq_ind = torch.cat([torch.tensor([0]), torch.cumsum(self.tot_seqs_per_patient, 0)], 0)
-
-        # Repertoire amino acid sequences.
-        self.mature_seqs = torch.tensor(self.h5f['sampledata']['amino_acid_sequences'][:], dtype=torch.int8,
-                                        device=self.device)
-        self.mature_seqs = torch.cat([self.mature_seqs, -torch.ones((self.mature_seqs.shape[0], 1),
-                                                                           dtype=torch.int8, device=self.device)], dim=1)
-        seq_lens = torch.tensor(self.h5f['sampledata']['seq_lens'][:], dtype=torch.long, device=self.device)
-        self.mature_seqs[torch.arange(len(seq_lens), dtype=torch.long), seq_lens] = (
-                    torch.tensor(len(self.aa_alphabet) - 1, dtype=torch.int8, device=self.device))
-        self.repertoire_length = self.mature_seqs.shape[1]
-
-        # Outcomes
-        outcomes = -torch.ones(len(self.cmv_status), dtype=torch.long)
-        outcomes += torch.tensor(self.cmv_status == '+') * 2 + torch.tensor(self.cmv_status == '-')
-        self.outcomes = one_hot(outcomes.to(device=self.device), 2, torch.float)
-
-        # Counts per sequence.
-        self.counts_per_seq = torch.tensor(self.h5f['sampledata']['counts_per_sequence'][:],
-                                           dtype=torch.int, device=self.device)
-
-        # Pin big data tensors to memory for fast cpu->gpu transfer.
-        if cuda and not cuda_data:
-            self.mature_seqs.pin_memory()
-            self.outcomes.pin_memory()
-            self.counts_per_seq.pin_memory()
-
-        self.dtype = dtype
-        self.generator = generator
-
-    def __len__(self):
-
-        return self.tot_patients
-
-    def get_batch(self, seqs, counts, start_indx, end_indx):
-        """Subsample a batch of sequences from a repertoire."""
-        if self.seq_batch > 0:
-            # Take random batch.
-            seq_indx = torch.randint(low=start_indx, high=end_indx, size=(self.seq_batch,),
-                                     device=self.device)
-        else:
-            # Take all sequences.
-            seq_indx = slice(start_indx, end_indx)
-        seq_subset = seqs[seq_indx]
-        count_subset = counts[seq_indx]
-        return seq_subset, count_subset
-
-    def __getitem__(self, i):
-        """Get patient i's data (mature and naive repertoire, outcome)."""
-
-        # Mature sequences.
-        matures, seq_counts = self.get_batch(self.mature_seqs, self.counts_per_seq,
-                                             self.seq_ind[i], self.seq_ind[i + 1])
-        tot_matures = self.seq_ind[i + 1] - self.seq_ind[i]
-
-        # Naive sequences
-        naives = matures
-        tot_naives = tot_matures
-
-        # Outcomes.
-        outcomes = self.outcomes[i]
-
-        return matures, naives, outcomes, tot_matures, tot_naives, seq_counts
 
 
 class RepertoireTensorDataset(tdata.Dataset):
@@ -373,9 +286,12 @@ class RepertoireTensorDataset(tdata.Dataset):
 
 # --- Data features (one-hot encoding, position encoding). ---
 class DataFeatures:
+    """This class featurizes repertoire sequences.
+    In particular, sequences on the cpu, represented as int8s with each integer corresponding to an amino acid,
+    are transformed into sequences on the gpu, represented as one-hot encodings together with position encodings.
+    There is also an option to use BLOSUM in place of one-hot encodings."""
     def __init__(self, max_seq_len, alphabet, args):
-        """Initialize"""
-        # TODO: switch to explicit args
+        """Initialize."""
         super().__init__()
 
         # Save arguments.
@@ -425,13 +341,10 @@ class DataFeatures:
     def featurize_seqs(self, seqs, seq_counts=None):
         """
         Convert sequence, encoded as integers, to one-hot encoded with position features, on the gpu.
-        Follows __compute_features__ in DeepRC.
+        Roughly based on __compute_features__ in DeepRC (Widrich et al., 2020).
         """
         # Transfer to cuda.
         seqs = seqs.to(device=self.device, non_blocking=True).to(dtype=torch.int)
-        if self.args.drc_seq_counts:
-            # Deprecated.
-            seq_counts = seq_counts.to(device=self.device, non_blocking=True).to(dtype=self.args.low_dtype)
         # Compute sequence lengths (using stop symbol position).
         seq_len = seqs.argmax(dim=-1)
         # Allocate full one-hot encoded tensor.
@@ -449,9 +362,6 @@ class DataFeatures:
         # Encode with BLOSUM.
         if self.args.blosum_encode:
             feats = torch.einsum('nmlj,jk->nmlk', feats, self.aa_encode)
-        if self.args.drc_seq_counts:
-            # Scale features by sequence counts
-            feats = feats * seq_counts[:, :, None, None].abs().log1p()
         if self.args.pos_encode:
             # Add positional encoding.
             feats[..., -3:] = self.pos_features[seq_len]

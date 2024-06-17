@@ -47,7 +47,7 @@ from sklearn.linear_model import LogisticRegression
 
 from CausalReceptors.distributions import MissingDataOneHotCategorical, Normal
 from CausalReceptors.layers import SeqEmbed, AttentionReduce
-from CausalReceptors.dataloader import RepertoiresDataset, DeepRCDataset, DataFeatures, BindingDataset
+from CausalReceptors.dataloader import RepertoiresDataset, DataFeatures, BindingDataset
 from CausalReceptors.metrics import roc_auc_score, r2_score, accuracy, pearson_score, average_precision_score, explained_variance_score, r_pvalue
 from CausalReceptors.elbos import CudaJitTrace_ELBO, CudaSVI
 
@@ -1245,7 +1245,7 @@ class CausalRepertoireModel(nn.Module):
         return results, summaries, est_effects, candidate_counts
 
     def evaluate_true(self, data, summaries, train_ind, validate_ind, test_ind, aim_run):
-        """Evaluate model against ground truth, available for semisynthetic data"""
+        """Evaluate model against ground truth, for semisynthetic data"""
         # Compare latent simulation variables to model terms.
         inject_ind = torch.tensor(data.h5f['inject_patients'][:], dtype=torch.bool)
         confound_ind = torch.tensor(data.h5f['confounder'][:], dtype=torch.bool)
@@ -1474,7 +1474,7 @@ class CausalRepertoireModel(nn.Module):
             repertoire_featurizer=self.repertoire_featurizer, no_attention=self.args.no_attention,
             low_dtype=self.args.low_dtype, cuda=self.args.cuda)
 
-        # Compute effects of each sequence if used for intervention.
+        # Compute the effect of each sequence, if it was used for an intervention.
         est_effects = torch.zeros(len(data), dtype=torch.float)
         seq_ind = 0
         for candidates, _ in dataload:
@@ -1503,30 +1503,20 @@ class CausalRepertoireModel(nn.Module):
             mcind = data.mhc_class_eval[mc]
             hit_sub = hits[mcind]
             effect_sub = est_effects[mcind]
-            # PR-AUC.
-            results['bind_effect_pr_auc_class_' + str(mc)] = average_precision_score(hit_sub, effect_sub)
-            results['bind_effect_abs_pr_auc_class_' + str(mc)] = average_precision_score(hit_sub, effect_sub.abs())
             # AUC.
             results['bind_effect_auc_class_' + str(mc)] = roc_auc_score(hit_sub, effect_sub)
-            results['bind_effect_abs_auc_class_' + str(mc)] = roc_auc_score(hit_sub, effect_sub.abs())
             # Baselines.
             baseline_samples = self.args.baseline_samples
-            pr_auc_baselines = np.zeros(baseline_samples)
             auc_baselines = np.zeros(baseline_samples)
             for k in range(baseline_samples):
                 rand_effects = est_effects[torch.randperm(len(hit_sub))]
-                pr_auc_baselines[k] = average_precision_score(hit_sub, rand_effects)
                 auc_baselines[k] = roc_auc_score(hit_sub, rand_effects)
-            results['bind_effect_pr_auc_baseline_mn_class_' + str(mc)] = np.mean(pr_auc_baselines)
-            results['bind_effect_pr_auc_baseline_upper_quantile_class_' + str(mc)] = np.quantile(pr_auc_baselines, self.args.baseline_quantile)
-            results['bind_effect_pr_auc_baseline_lower_quantile_class_' + str(mc)] = np.quantile(pr_auc_baselines, 1-self.args.baseline_quantile)
             results['bind_effect_auc_baseline_mn_class_' + str(mc)] = np.mean(auc_baselines)
             results['bind_effect_auc_baseline_upper_quantile_class_' + str(mc)] = np.quantile(auc_baselines, self.args.baseline_quantile)
             results['bind_effect_auc_baseline_lower_quantile_class_' + str(mc)] = np.quantile(auc_baselines, 1-self.args.baseline_quantile)
 
         # Compare effect estimates against hits, aggregated by patient.
         patient_aucs = np.zeros(data.num_patients)
-        patient_abs_aucs = np.zeros(data.num_patients)
         patient_weights = np.zeros(data.num_patients)
         for p_i in range(data.num_patients):
             p_ind = data.patients == p_i
@@ -1535,7 +1525,6 @@ class CausalRepertoireModel(nn.Module):
             patient_weights[p_i] = torch.sum(hit_sub)
             # AUC.
             patient_aucs[p_i] = roc_auc_score(hit_sub, effect_sub)
-            patient_abs_aucs[p_i] = roc_auc_score(hit_sub, effect_sub.abs())
 
         patient_weights = patient_weights / np.sum(patient_weights)
 
@@ -1549,14 +1538,10 @@ class CausalRepertoireModel(nn.Module):
         results['bind_effect_auc_patient_mean'] = w_mean
         results['bind_effect_auc_patient_std'] = w_std
         results['bind_effect_auc_patient_se'] = w_std / np.sqrt(data.num_patients)
-        w_mean, w_std = weighted_mean_std(patient_abs_aucs, patient_weights)
-        results['bind_effect_abs_auc_patient_mean'] = w_mean
-        results['bind_effect_abs_auc_patient_std'] = w_std
-        results['bind_effect_abs_auc_patient_se'] = w_std / np.sqrt(data.num_patients)
 
         aim_run.track(results)
 
-        # Plot.
+        # Plot distribution of estimated effects.
         aim_run.track(Distribution(est_effects[hits < 0.5]), name='nonhit-effects')
         aim_run.track(Distribution(est_effects[hits > 0.5]), name='hit-effects')
 
