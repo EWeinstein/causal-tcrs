@@ -1,3 +1,17 @@
+"""
+Generate semisynthetic data for evaluating CAIRE.
+
+Code organization:
+ - SemisyntheticGenerator: The main data generating model.
+ - SyntheticFitness: Computes the relative fitness of sequences in the preselection repertoire.
+ - SyntheticOutcome: Generates the outcome from the mature repertoire and confounder.
+ - InterventionEffect: Computes the true effect of an intervention with an individual sequence.
+ - DataFeaturizer: One hot encode sequence data from a single repertoire.
+ - KmerCounter, extract_kmers: Count kmers of a given length in a dataset of repertoires.
+ - main: core program flow, implementing all the steps of data generation.
+"""
+
+
 from aim import Figure, Distribution
 import pandas as pd
 import argparse
@@ -16,6 +30,10 @@ from CausalReceptors.dataloader import RepertoiresDataset, RepertoireTensorDatas
 
 
 class SemisyntheticGenerator:
+    """The main data generating model.
+    Based on real data and chosen parameters, it creates a full semisynthetic dataset, and records
+    ground truth values of latent variables.
+    """
     def __init__(self, real_data, synthetic, generator, smoke=False):
         # Save input.
         self.generator = generator
@@ -38,7 +56,7 @@ class SemisyntheticGenerator:
 
     def create_naive(self, causal_motif, patient_frac, causal_seq_frac, confound_motifs, confound_seq_frac,
                      position_start, position_end, aim_run):
-        """Inject motif into naive repertoire."""
+        """Create naive repertoires, by motif injection."""
         # Convert motif dtype to match data.
         causal_motif = causal_motif.to(dtype=torch.int8)
         motif_length = len(causal_motif)
@@ -73,7 +91,7 @@ class SemisyntheticGenerator:
                 else:
                     motif = confound_motifs[k-1]
                 # For the causal motif, presence is randomized in the naive repertoire;
-                # for confounder motifs, changes come just from selection.
+                # for confounder motifs, changes in prevalence come just from selection.
                 if inject_patients[i] > 0.5 or k > 0:
                     # Get sequences to inject.
                     rep_ind = slice(self.full_naive_ind[i], self.full_naive_ind[i + 1])
@@ -114,6 +132,7 @@ class SemisyntheticGenerator:
         return None
 
     def create_confounder(self, nconfounders, confound_probability):
+        """Create confounder(s)."""
         # Sample confounder.
         self.confound = torch.bernoulli(confound_probability * torch.ones([self.nsamples, nconfounders]),
                                         generator=self.generator)
@@ -130,7 +149,7 @@ class SemisyntheticGenerator:
 
     def create_mature(self, confound_motifs, positive_select_strength, negative_select_strength,
                       aim_run, low_dtype=torch.float32, cuda=False):
-
+        """Create mature repertoires, through selection."""
         # Initialize dataset, dataloader and featurizer
         repertoire_data = RepertoireTensorDataset(self.QA_seqs, self.QA_ind, self.confound, cuda=cuda)
         repertoire_load = DataLoader(repertoire_data, batch_size=1, shuffle=False, num_workers=1, generator=None,
@@ -220,7 +239,7 @@ class SemisyntheticGenerator:
 
     def create_outcome(self, inject_motif, motif_threshold, motif_effect, confounder_effect, base_effect, outcome_type,
                        aim_run, outcome_noise=0.1, low_dtype=torch.float32, cuda=False):
-
+        """Create the outcome variable."""
         # Initialize dataset, dataloader and featurizer
         repertoire_data = RepertoireTensorDataset(self.QA_seqs, self.QA_ind, self.confound, seq_nums=self.QA_weights,
                                                   cuda=cuda)
@@ -297,7 +316,9 @@ class SemisyntheticGenerator:
 
 
 class SyntheticFitness(nn.Module):
-    """Compute relative fitness of each sequence in the naive repertoire."""
+    """Compute relative fitness of each sequence in the naive repertoire.
+    Here, relative fitness depends on the presence of certain kmer(s) (motifs).
+    """
     def __init__(self, repertoire_length, alphabet, confound_motifs, positive_select_strength, negative_select_strength,
                  low_dtype=torch.float32, cuda=False):
         super().__init__()
@@ -348,7 +369,8 @@ class SyntheticFitness(nn.Module):
 
 
 class SyntheticOutcome(nn.Module):
-    """Generate outcome from mature repertoire."""
+    """Generate outcome from mature repertoire.
+    The outcome depends on the presence of a causal kmer/motif in the repertoire, and on the confounder."""
     def __init__(self, repertoire_length, alphabet, inject_motif, motif_threshold,
                  motif_effect, confounder_effect, base_effect,
                  low_dtype=torch.float32, cuda=False):
@@ -396,7 +418,12 @@ class SyntheticOutcome(nn.Module):
 
 
 class InterventionEffect(nn.Module):
-    """Compute the effect of a soft intervention that adds a sequence to each patient's repertoire."""
+    """Compute the effect of an intervention that adds a sequence to each patient's repertoire.
+
+    This effect calculation should be interpreted cautiously: it assumes a linear dependence on the fraction of
+    sequences with the causal motif rather than a step-wise threshold (as in the data generating model).
+    It coincides with the true effect only if the intervention fraction is exactly twice the threshold.
+    """
     def __init__(self, repertoire_length, alphabet, intervene_frac, inject_motif,
                  motif_effect, base_effect, motif_contribs, confound_contribs,
                  outcome_type, low_dtype=torch.float32, cuda=False):
@@ -465,6 +492,7 @@ class DataFeaturizer(DataFeatures):
 
 
 class KmerCounter(nn.Module):
+    """Count the total number of each kmer of a certain length in a set of one-hot encoded repertoire sequences."""
     def __init__(self, args, data):
         super().__init__()
 
@@ -499,7 +527,7 @@ class KmerCounter(nn.Module):
 
 
 def extract_kmers(real_data, args, aim_run):
-    """Extract kmer counts from dataset."""
+    """Extract total kmer counts from a dataset."""
     # Set up dataloader.
     dataload = DataLoader(real_data, batch_size=args.unit_batch, shuffle=False,
                           num_workers=args.num_workers, generator=None, drop_last=False,
@@ -617,7 +645,7 @@ class DefaultArgs:
         self.inject_seq_frac = 0.01
         self.confound_seq_frac = 0.005
         self.motif_length = 3
-        self.inject_position_start = 2  # TODO: revise w/ncut.
+        self.inject_position_start = 2
         self.inject_position_end = 4
         self.nconfounders = 2
         self.confounder_motifs = 10

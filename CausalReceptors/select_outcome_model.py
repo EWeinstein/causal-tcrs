@@ -15,6 +15,7 @@ Code organization, and corresponding notation in the paper:
    (notation: ATE)
  - CausalRepertoireModel: The main CAIRE model. It includes the complete Pyro model, as well as functions for
    training and evaluation.
+ - main: core program flow, implementing setup, training and evaluation.
 
 Additional comments:
 
