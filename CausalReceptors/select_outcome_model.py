@@ -1,25 +1,29 @@
 """
-Causal inference for immune receptor sequences.
+Causal adaptive immune repertoire estimation (CAIRE).
 
-Code organization:
-Model:
-    - Selection.
-        - Global: productivity classification neural network parameters. (SeqEmbed)
-        - Local: selection representation / feature weights, offset.
-    - Propensity.
-    - Repertoire.
-        - Global: mixture components.
-        - Local: mixture weights.
-    - Outcome.
+This is the main CAIRE model. It takes in a dataset of immune repertoires and patient outcomes,
+and learns a model of the causal effects of adding an individual sequence to the repertoire.
 
-Guide:
-    - Selection & repertoire locals: repertoire encoder + variational approximation.
-        - Bottom up 1: data -> SeqEmbed -> repertoire embed
-        - Bottom up 2: repertoire embed -> selection embed
-        - Top down: selection representation -> repertoire embed
-    - Propensity: variational approximation.
-    - Outcome: variational approximation.
-    - Repertoire: delta function approximation.
+Code organization, and corresponding notation in the paper:
+ - Featurizer: Neural network module that extracts sequence features for predicting maturity.
+   (notation: h_r)
+ - RepertoireFeaturizer: Neural network module that extracts repertoire features for predicting outcome.
+   (notation: E[h_a(A;theta)])
+ - Encoder: Neural network module used for amortized inference of fitness representations.
+   (notation: enc)
+ - InterventionEffect: Module used to compute intervention effects, based on the trained model.
+   (notation: ATE)
+ - CausalRepertoireModel: The main CAIRE model. It includes the complete Pyro model, as well as functions for
+   training and evaluation.
+
+Additional comments:
+
+In descriptions, we generally use the notation:
+N - number of patients (aka "units").
+M - number of repertoire sequences per patient (aka "subunits"; this is usually a batch size).
+L - max sequence length
+D - number of sequence features (corresponding to the amino acid alphabet, plus e.g. position features).
+In variable names, we use the term "naive" to refer to the preselection repertoire.
 """
 from aim import Figure, Distribution
 import argparse
@@ -56,9 +60,11 @@ from CausalReceptors.semisynthetic import KmerEmbed
 # --- Featurizer ---
 class Featurizer(nn.Module):
     """Extract sequence features.
-    Input: naive and mature sequences (2(N x M x L x D))
+    This module extracts features from a collection of preselection and mature sequences,
+    which are used as part of the relative fitness model.
+    Input: preselection and mature sequences (2(N x M x L x D))
     Output: sequence features (2(N x M x features))
-    Layer: SeqEmbed
+    Neural network layer: SeqEmbed
     """
     def __init__(self, num_length, alphabet, args):
 
@@ -74,19 +80,14 @@ class Featurizer(nn.Module):
         # CNN layer
         self.seq_embed = SeqEmbed(
             num_length, alphabet, args.selection_channels,
-            conv_kernel=args.selection_conv_kernel, architecture=args.architecture,
+            conv_kernel=args.selection_conv_kernel, architecture='cnn',
             pos_encode=args.pos_encode, sum_pool=args.sum_pool, linear_cnn=args.linear_cnn,
-            no_pool=args.no_pool_select,
-            transformer_nhead=args.transformer_nhead, transformer_dimff=args.transformer_dimff,
-            dtype=args.low_dtype, cuda=args.cuda)
+            no_pool=False, dtype=args.low_dtype, cuda=args.cuda)
         self.seq_embed.to(dtype=args.low_dtype)
 
         # Feedforward layer.
         ff = []
-        if args.no_pool_select:
-            n_input_features = self.seq_embed.hidden_size * self.seq_embed.hidden_dim
-        else:
-            n_input_features = args.selection_channels
+        n_input_features = args.selection_channels
         n_output_features = args.n_selection_units
         self.n_selection_layers = args.n_selection_layers
         for layer_i in range(args.n_selection_layers):
@@ -103,7 +104,7 @@ class Featurizer(nn.Module):
             self.ff.cuda()
 
     def forward(self, matures, naives):
-        # Extract sequence features. # TODO: check speed, cat is maybe too slow.
+        # Extract sequence features.
         features = torch.cat([self.seq_embed(matures), self.seq_embed(naives)], 1).to(dtype=torch.float32)
 
         # Feed forward.
@@ -115,16 +116,14 @@ class Featurizer(nn.Module):
 # --- Repertoire featurizer ---
 class RepertoireFeaturizer(nn.Module):
     """Extract repertoire features.
+    This module extracts repertoire-level features from mature repertoires.
     Input: repertoire sequences (N x M x L x D)
-    Output: hidden embedding 1 (N x embed1)
+    Output: repertoire embedding (N x repertoire_latent_dim)
 
     Layers:
-    SeqEmbed: N x M x L x D -> N x M x embed
-    attention: N x M x embed -> N x embed
+    SeqEmbed: N x M x L x D -> N x M x repertoire_latent_dim
+    attention: N x M x embed -> N x repertoire_latent_dim
 
-    Here, for numbers of the form #1/#2, #1 corresponds to the option for the all amino acids case
-    (in which 'mature' and 'repertoire' are redundant) and #2 corresponds to the option for the dna and aa case
-    (in which case 'mature' consists of dna sequences, while 'repertoire' consists of aa).
     """
 
     def __init__(self, num_length, alphabet, args):
@@ -143,15 +142,15 @@ class RepertoireFeaturizer(nn.Module):
         # Sequence embedding.
         self.seq_embed = SeqEmbed(
                 num_length, alphabet, args.repertoire_latent_dim,
-                conv_kernel=args.conv_kernel, architecture=args.architecture,
-                pos_encode=args.pos_encode, sum_pool=args.sum_pool, transformer_nhead=args.transformer_nhead,
-                transformer_dimff=args.transformer_dimff, dtype=args.low_dtype, cuda=args.cuda)
+                conv_kernel=args.conv_kernel, architecture='cnn',
+                pos_encode=args.pos_encode, sum_pool=args.sum_pool,
+                dtype=args.low_dtype, cuda=args.cuda)
         self.seq_embed.to(dtype=args.low_dtype)
 
         # Repertoire embedding.
         self.repertoire_reduce = AttentionReduce(args.repertoire_latent_dim, args.n_attention_layers,
                                                  args.n_attention_units,
-                                                 no_attention=args.no_attention, no_embedding=args.no_embedding,
+                                                 no_attention=args.no_attention,
                                                  top_fraction=args.top_fraction, use_counts=True, cuda=args.cuda)
 
         if args.cuda:
@@ -172,8 +171,13 @@ class RepertoireFeaturizer(nn.Module):
 # --- Encoder ---
 class Encoder(nn.Module):
     """Encoder.
-    Input: naive and mature sequences (2(N x M x L x D)).
-    Output: selection representation variational parameters (rho_mn, rho_sd, beta_mn, beta_sd)
+    This module is used for amortized inference of the relative fitness model. It takes in
+    preselection and mature repertoire sequences, and outputs parameters for a distribution
+    over the fitness representation rho_i and the additional local latent variable beta_i.
+
+    Input: preselection and mature sequences (2(N x M x L x D)).
+    Output: fitness representation variational parameters (rho_mn, rho_sd, beta_mn, beta_sd)
+    (Note when the model is trained using a point estimate, rho_sd and beta_sd will not be used.)
 
     Layers:
     latent_size = (2 (select_latent_dim + 1))
@@ -194,9 +198,8 @@ class Encoder(nn.Module):
         # Sequence embedding.
         self.seq_embed = SeqEmbed(
             num_length, alphabet, args.encoder_channels,
-            conv_kernel=args.encoder_conv_kernel, architecture=args.architecture, pos_encode=args.pos_encode,
-            no_pool=args.no_pool_select, sum_pool=args.sum_pool, transformer_nhead=args.transformer_nhead,
-            transformer_dimff=args.transformer_dimff, dtype=args.low_dtype, cuda=args.cuda)
+            conv_kernel=args.encoder_conv_kernel, architecture='cnn', pos_encode=args.pos_encode,
+            no_pool=False, sum_pool=args.sum_pool, dtype=args.low_dtype, cuda=args.cuda)
         self.seq_embed.to(dtype=args.low_dtype)
 
         # Naive counts.
@@ -245,137 +248,23 @@ class Encoder(nn.Module):
         return rho_mn, rho_sd, beta_mn, beta_sd
 
 
-class BUEncoder1(nn.Module):
-    """Bottom up encoder layer 1.
-    Input: naive and mature sequences (2(N x M x L x D)) along with outcomes (N)
-    Output: hidden embedding 1 (N x embed1)
-
-    Layers:
-    SeqEmbed: 2(N x M x L x D) -> 2(N x M x embed)
-    add sequence type feature: -> 2(N x M x (embed + 1))
-    concatenate: 2(N x M x (embed + 1)) -> N x 2 M x (embed + 1)
-    attention reduction: N x 2M x (embed + 1) -> N x (embed + 1)
-    concatenate: N x (embed + 1) & N x 2 -> N x (embed + 3)
-    """
-
-    def __init__(self, num_length, alphabet, max_subunits, args):
-        """Initialization.
-        Inputs
-        num_length - padded sequence length
-        alphabets - str
-        """
-        super().__init__()
-        self.args = args
-        if args.cuda:
-            self.device = 'cuda'
-        else:
-            self.device = 'cpu'
-
-        self.source_total = 2
-
-        # Sequence embedding.
-        # An embedding dimension is subtracted in the all_aa == False case, to standardize the final embedding
-        # size at channels + 4 across both all_aa cases.
-        self.seq_embed = SeqEmbed(
-                num_length, alphabet, args.encoder_channels,
-                conv_kernel=args.encoder_conv_kernel, architecture=args.architecture, pos_encode=args.pos_encode,
-                no_pool=args.no_pool_select,
-                sum_pool=args.sum_pool, transformer_nhead=args.transformer_nhead,
-                transformer_dimff=args.transformer_dimff, dtype=args.low_dtype, cuda=args.cuda)  #
-        self.seq_embed.to(dtype=args.low_dtype)
-
-        # Sequence source features.
-        self.zeros_subunit = torch.zeros(max_subunits, device=self.device, dtype=args.low_dtype)
-        self.ones_subunit = torch.ones(max_subunits, device=self.device, dtype=args.low_dtype)
-        self.naive_source_feats = torch.zeros([args.unit_batch, max_subunits, 1],
-                                               )
-        self.mature_source_feats = torch.ones([args.unit_batch, max_subunits, 1],
-                                               device=self.device, dtype=args.low_dtype)
-
-        # Naive counts.
-        # Warning: update this if switch to using only unique sequences for naive.
-        self.naive_counts = torch.ones(args.unit_batch, max_subunits, device=self.device, dtype=torch.float32)
-
-        # Repertoire embedding.
-        self.repertoire_reduce = AttentionReduce(
-                args.encoder_channels + 1, args.n_encoder_attention_layers,
-                args.n_encoder_attention_units, top_fraction=args.encoder_top_fraction,
-                use_counts=True, cuda=args.cuda)
-        if args.cuda:
-            self.cuda()
-
-    def forward(self, matures, mature_counts, naives, outcomes):
-
-        # Dimensions.
-        N, Mm, Mn = matures.shape[0], matures.shape[1], naives.shape[1]
-
-        # Embed mature and naive sequences.
-        embed = torch.cat([self.seq_embed(matures), self.seq_embed(naives)], dim=1)
-
-        # Sequence counts, for weighting.
-        counts = torch.cat([mature_counts, self.naive_counts[:N, :Mn]], dim=1)
-
-        # Add source feature.
-        mature_source_feats = self.ones_subunit[:(N * Mm)].view([N, Mm, 1])
-        naive_source_feats = self.zeros_subunit[:(N * Mn)].view([N, Mn, 1])
-        seq_source_feats = torch.cat([mature_source_feats, naive_source_feats], dim=1)
-        embed_source = torch.cat([embed, seq_source_feats], dim=2)
-
-        # Attention reduction (attention weighted average).
-        enc_hidden = self.repertoire_reduce(embed_source.to(dtype=torch.float32), counts)[0]
-
-        # Concatenate with outcomes. # TODO: drop outcomes?
-        enc_hidden = torch.cat([enc_hidden, outcomes], dim=1)
-
-        return enc_hidden
-
-
-class BUEncoder2(nn.Module):
-    """Bottom up encoder layer 2.
-    Input: hidden embedding 1 (N x embed1)
-    Output: selection representation variational parameters (rho_mn, rho_sd, beta_mn, beta_sd)
-
-    Layers:
-    MLP: N x (embed + 3) -> N x (2 (select_latent_dim + 1))
-    split & softplus:   N x (2 (select_latent_dim + 1)) -> 2(N x select_latent_dim) + 2 (N)
-    """
-
-    def __init__(self, args):
-        super().__init__()
-        self.args = args
-        if args.cuda:
-            self.device = 'cuda'
-        else:
-            self.device = 'cpu'
-
-        layers = []
-        # TODO: May need to adjust this input dimension.
-        layers.append(nn.Linear(args.encoder_channels + 2 + (args.outcome=='binary'), args.select_embed_layer_dim))
-        layers[-1].weight.data.normal_(0.0, np.sqrt(1 / np.prod(layers[-1].weight.shape)))
-        layers.append(nn.SELU())
-        layers.append(nn.Linear(args.select_embed_layer_dim, 2 * args.select_latent_dim + 2))
-        layers[-1].weight.data.normal_(0.0, np.sqrt(1 / np.prod(layers[-1].weight.shape)))
-        self.layers = nn.Sequential(*layers)
-
-        if args.cuda:
-            self.cuda()
-
-    def forward(self, enc_hidden):
-        # Single layer NN.
-        out = self.layers(enc_hidden)
-        # Split into locations and scales (rho_mn, rho_sd, beta_mn, beta_sd)
-        rho_mn = out[:, None, :self.args.select_latent_dim]
-        rho_sd = nn.functional.softplus(out[:, None, self.args.select_latent_dim:(2 * self.args.select_latent_dim)])
-        beta_mn = out[:, None, 2 * self.args.select_latent_dim]
-        beta_sd = nn.functional.softplus(out[:, None, 2 * self.args.select_latent_dim + 1])
-        return rho_mn, rho_sd, beta_mn, beta_sd
-
-
 class InterventionEffect(nn.Module):
-    """Compute the effect of a soft intervention that adds a sequence to each patient's repertoire."""
+    """Interventional effect.
+
+    This module compute the effect of an intervention that adds a sequence to each patient's repertoire.
+
+    Input: Candidate sequences (cN x cM x L x D).
+    Output: Effects (cN*cM)
+    The candidate sequences take the same shape as repertoires, but this is only for convenience; there is
+    nothing distinguishing the first two dimensions. The output is a vector of length cN*cM.
+
+    Note: intervene_frac is notated epsilon in the paper; it is the fraction of the intervened repertoire that
+    is the added sequence. It is provided at initialization.
+    """
     def __init__(self, intervene_frac, treatment_coeff, treatment_contribs, treatment_norms_ln, confound_contribs,
                  base_contribs, outcome_type, max_batch=1, repertoire_featurizer=None, no_attention=False,
                  low_dtype=torch.float32, cuda=False):
+
         super().__init__()
         if cuda:
             self.cuda()
@@ -435,17 +324,20 @@ class InterventionEffect(nn.Module):
                                                -self.treatment_norms_ln[None, :, None].expand(cN * cM, -1, 1)], 2))
             contrib_weights = contrib_score.softmax(dim=2)
 
-            # Compute intervened repertoire's contribution to the outcome.
+            # Compute intervened repertoire's contribution to the outcome. (cN*cM) x N
             inter_rep_contrib = (contrib_weights[:, :, 0] * self.treatment_contribs[None, :] +
                                  contrib_weights[:, :, 1] * intervene_contribs)
 
         # Compute effect.
         if self.outcome_type == 'binary':
+            # Binary outcome variable.
             effect_on = (inter_rep_contrib + self.natural_contribs[None, :]).sigmoid().mean(dim=1)
             effect_off = (self.treatment_contribs[None, :] + self.natural_contribs[None, :]).sigmoid().mean(dim=1)
             effect = effect_on - effect_off
         elif self.outcome_type == 'continuous':
-            # Using a Gaussian output distribution, the confounder and base/offset terms cancel between _on and _off
+            # Continuous outcome variable.
+            # Here, using a Gaussian output distribution, the confounder and base/offset terms cancel
+            # between _on and _off
             effect_on = inter_rep_contrib.mean(dim=1)
             effect_off = self.treatment_contribs[None, :].mean(dim=1)
             effect = effect_on - effect_off
@@ -454,7 +346,7 @@ class InterventionEffect(nn.Module):
 
 
 class CausalRepertoireModel(nn.Module):
-    """The main model."""
+    """The CAIRE model."""
     def __init__(self, args, data):
         """Initialize"""
         super().__init__()
@@ -472,7 +364,6 @@ class CausalRepertoireModel(nn.Module):
         self.selection_model = True
         self.propensity_model = True
         if self.args.no_outcome:
-            # Deprecated.
             self.outcome_model = False
             self.propensity_model = False
         elif self.args.no_selection:
@@ -482,27 +373,21 @@ class CausalRepertoireModel(nn.Module):
             self.propensity_model = False
 
         # Max total subunits.
-        # Warning: this assumes evaluation mode uses 1 unit and all subunits
-        # OR same unit and subunit batch as training.
+        # Note: we assume in evaluation we use the same unit and subunit batch as training.
         max_subunits = torch.maximum(data.tot_seqs_per_patient.max(), data.tot_naive_per_patient.max())
         max_total_subunits = np.maximum(args.unit_batch * args.subunit_batch, max_subunits)
 
         # Initialize data featurizer.
         self.data_featurizer = DataFeatures(data.repertoire_length, data.repertoire_alphabet, args)
 
-        # Initialize selection featurizer.
+        # Initialize selection (aka relative fitness) featurizer.
         self.selection_featurizer = Featurizer(data.repertoire_length, data.repertoire_alphabet, args)
 
         # Initialize repertoire featurizer
         self.repertoire_featurizer = RepertoireFeaturizer(data.repertoire_length, data.repertoire_alphabet, args)
 
         # Initialize encoder.
-        if args.flexible_encoder:
-            # Deprecated.
-            self.bu_encoder_1 = BUEncoder1(data.repertoire_length, data.repertoire_alphabet, max_total_subunits, args)
-            self.bu_encoder_2 = BUEncoder2(args)
-        else:
-            self.encoder = Encoder(data.repertoire_length, data.repertoire_alphabet, max_total_subunits, args)
+        self.encoder = Encoder(data.repertoire_length, data.repertoire_alphabet, max_total_subunits, args)
 
         # Save data parameters.
         self.repertoire_length = data.repertoire_length
@@ -561,8 +446,8 @@ class CausalRepertoireModel(nn.Module):
 
     def model(self, matures, mature_counts, naives, outcomes, selection_correction,
               unit_correction, local_prior_scale):
-        """Generative model."""
-        # -- The latent causal model. --
+        """Generative model and propensity model."""
+        # -- Global parameters. --
         if self.propensity_model:
             # Propensity.
             propensity_coeff = pyro.sample('propensity_coeff', Normal(
@@ -611,7 +496,7 @@ class CausalRepertoireModel(nn.Module):
             with poutine.scale(scale=unit_correction):
                 # - Selection model: predict naive vs mature. -
                 if self.selection_model:
-                    # Scale for KL annealing
+                    # Scale for annealing the prior on the local latent variables.
                     with poutine.scale(scale=local_prior_scale):
                         # Latent selection representation.
                         rho = pyro.sample('rho', Normal(self.rho_loc, self.rho_scale).to_event(1))
@@ -636,13 +521,14 @@ class CausalRepertoireModel(nn.Module):
                 if self.propensity_model:
                     # Propensity mean.
                     e_rho = torch.einsum('ibk,kl->ibl', rho, W_e) + B_e
-                    # Propensity model. Alpha should not be updated based on this log probability.
+                    # Propensity model. Alpha should not be updated based on this log probability, so is
+                    # detached from the automatic differentiation graph.
                     pyro.sample('alpha', dist.Normal(e_rho, propensity_tau).to_event(1),
                                  obs=alpha.detach())
 
                 if self.outcome_model:
                     # - Outcome. -
-                    # Record each term, to enable treatment effect calculations.
+                    # We record each term of the outcome model to enable treatment effect calculations.
                     pyro.deterministic('base_contrib', B_Y)
                     mn_Y = (pyro.deterministic('treatment_contrib', torch.einsum('ibk,k->ib', alpha, W_A))
                             + B_Y)
@@ -667,8 +553,8 @@ class CausalRepertoireModel(nn.Module):
 
     def guide(self, matures, mature_counts, naives, outcomes, selection_correction,
               unit_correction, local_prior_scale):
-        """Variational approximation."""
-        # -- The latent causal model. --
+        """Variational (or point mass) approximation to the posterior."""
+        # -- Global parameters --
         if self.propensity_model:
             # Propensity.
             propensity_coeff_dim =(self.args.select_latent_dim + 1) * self.args.repertoire_latent_dim
@@ -725,15 +611,11 @@ class CausalRepertoireModel(nn.Module):
                 tau_Y_loc = pyro.param("tau_Y_loc", lambda: self.outcome_noise_init)
                 pyro.sample("tau_Y", dist.Delta(softplus(tau_Y_loc)))
 
+        # -- Local (per-patient) latent variables. --
         if self.selection_model:
-            # -- Generate selection --
             # - Encoder -
             # Layers
-            if self.args.flexible_encoder:
-                pyro.module('bu_encoder_1', self.bu_encoder_1)
-                pyro.module('bu_encoder_2', self.bu_encoder_2)
-            else:
-                pyro.module('encoder', self.encoder)
+            pyro.module('encoder', self.encoder)
 
             # Sample units.
             num_units = matures.shape[0]
@@ -743,14 +625,8 @@ class CausalRepertoireModel(nn.Module):
                     # - Latent representations -
                     # Scale for KL annealing
                     with poutine.scale(scale=local_prior_scale):
-                        if self.args.flexible_encoder:
-                            # Bottom up encoder 1: data -> hidden layer.
-                            enc_hidden = self.bu_encoder_1(matures, mature_counts, naives, outcomes)
-                            # Bottom up encoder 2: hidden layer -> selection representation.
-                            rho_mn, rho_sd, beta_mn, beta_sd = self.bu_encoder_2(enc_hidden)
-                        else:
-                            # Encoder: data -> selection representation.
-                            rho_mn, rho_sd, beta_mn, beta_sd = self.encoder(matures, mature_counts, naives)
+                        # Encoder: data -> selection representation.
+                        rho_mn, rho_sd, beta_mn, beta_sd = self.encoder(matures, mature_counts, naives)
 
                         if self.args.select_posterior_rank == 0:
                             # Latent selection representation.
@@ -773,8 +649,8 @@ class CausalRepertoireModel(nn.Module):
 
     def _evaluate_batch(self, matures, mature_counts, naives, outcomes, selection_correction,
                         unit_correction, local_prior_scale, details=True):
-        """Compute key model summaries for a batch."""
-        # Units (patients) and subunits (sequences).
+        """Compute key summary statistics for a batch of data."""
+        # Get number of units (patients) and subunits (sequences).
         num_units, num_subunits = matures.shape[0], matures.shape[1]
         # Model arguments
         model_args = (matures, mature_counts, naives, outcomes, selection_correction,
@@ -789,7 +665,7 @@ class CausalRepertoireModel(nn.Module):
 
             if self.selection_model:
                 # Selection classifier accuracy.
-                # Warning: this is currently unweighted by counts.
+                # Note: this is unweighted by counts.
                 num_units, num_subunits_mature, num_subunits_naive = matures.shape[0], matures.shape[1], naives.shape[1]
                 labels = self._make_labels(num_units, num_subunits_mature, num_subunits_naive)
                 summaries['select_accuracy'] = accuracy(labels, model_tr.nodes['labels']['fn'].logits,
@@ -880,11 +756,11 @@ class CausalRepertoireModel(nn.Module):
             # Evaluate model on the validation set.
             summaries = self._evaluate_set(dataload_validate, details=False)
 
-            # Elbo estimate.
+            # ELBO estimate.
             elbo_mn = summaries['elbo'].mean().cpu()
             aim_run.track({'elbo_validate': elbo_mn}, step=step_i)
 
-            # Another overall score for model quality, based on roughly equal weighting of model parts.
+            # An overall score for model quality, based on roughly equal weighting of model parts.
             overall_score = torch.zeros(1, device=self.device)[0]
 
             if self.selection_model:
@@ -902,7 +778,6 @@ class CausalRepertoireModel(nn.Module):
                 propensity_pearson_mean = np.mean([pearson_score(rep_embed[:, j], propens[:, j])
                                                    for j in range(propens.shape[1])])
                 propensity_rmse = ((rep_embed - propens)**2).mean().sqrt()
-                # overall_score += propensity_pearson_mean  TODO: option to include propensity in overall model score.
                 aim_run.track({'propensity_r2_mean': propensity_r2_mean,
                                'propensity_pearson_mean': propensity_pearson_mean,
                                'propensity_rmse': propensity_rmse}, step=step_i)
@@ -932,6 +807,7 @@ class CausalRepertoireModel(nn.Module):
             else:
                 validation_score = overall_score
 
+            # Update record of best model.
             if (not self.args.no_early_stop and validation_score > self.validation_score) or (self.args.no_early_stop and final):
                 aim_run.track({'best_validation': validation_score}, step=step_i)
                 self.best_model = f"{aim_run['local_dir']}/checkpoint_model"
@@ -984,6 +860,7 @@ class CausalRepertoireModel(nn.Module):
             aim_run.track({'elbo': elbo, 'elbo_average': self.elbo_average, 'update': step_i}, step=step_i)
 
     def _init_fn(self, dataload, seed, svi=None):
+        """Initialize model."""
         pyro.set_rng_seed(seed)
         pyro.clear_param_store()
         for matures, naives, outcomes, matures_per, naives_per, mature_counts in dataload:
@@ -1063,12 +940,14 @@ class CausalRepertoireModel(nn.Module):
 
         # -- Stochastic variational inference setup --
         if self.args.no_jit:
+            # Without compilation.
             elbo = Trace_ELBO(max_plate_nesting=2)
             svi = SVI(self.model, self.guide, model_optim, loss=elbo)
             if self.args.separate_propensity:
                 elbo_propensity = Trace_ELBO(max_plate_nesting=2)
                 svi_propensity = SVI(self.model, self.guide, propensity_optim, loss=elbo_propensity)
         else:
+            # With model compilation, for the GPU.
             elbo = CudaJitTrace_ELBO(max_plate_nesting=2)
             svi = CudaSVI(self.model, self.guide, model_optim, loss=elbo)
             if self.args.separate_propensity:
@@ -1123,11 +1002,12 @@ class CausalRepertoireModel(nn.Module):
                     matures_per = matures_per.cuda(non_blocking=True)
                     naives_per = naives_per.cuda(non_blocking=True)
 
-                # Hack: same scale for mature & naive sequences, for generative -> classification conversion.
+                # We use the same scale for the contribution of the log probability of the mature & naive sequences
+                # under the selection (relative fitness) model. This is hacky from a fully Bayesian perspective
+                # but allows the classifier/log-odds trick to go through smoothly.
                 selection_correction = (matures_per + naives_per)/2
 
-                # Deprecated.
-                # KL annealing.
+                # Prior/KL annealing.
                 if not self.args.anneal_time:
                     local_prior_scale = self._beta_anneal(step_i, unit_correction, self.args.anneal)
 
@@ -1228,7 +1108,8 @@ class CausalRepertoireModel(nn.Module):
             # Check for substantial prediction variability
             aim_run.track({'r2_score_mean_{}'.format(subset): np.array(r2_scores[subset]).mean(),
                            'r2_score_sd_{}'.format(subset): np.array(r2_scores[subset]).std()})
-        # Proceed with average (warning: this may be inappropriate for non-mean-field variational approximations).
+        # We proceed with the average of the summaries
+        # (note this may be inappropriate in some cases, e.g. for non-mean-field variational approximations).
 
         # Overall results.
         data_subsets = {'train': train_ind, 'validate': validate_ind, 'test': test_ind}
@@ -1364,7 +1245,7 @@ class CausalRepertoireModel(nn.Module):
         return results, summaries, est_effects, candidate_counts
 
     def evaluate_true(self, data, summaries, train_ind, validate_ind, test_ind, aim_run):
-        """Evaluate model against ground truth for semisynthetic data"""
+        """Evaluate model against ground truth, available for semisynthetic data"""
         # Compare latent simulation variables to model terms.
         inject_ind = torch.tensor(data.h5f['inject_patients'][:], dtype=torch.bool)
         confound_ind = torch.tensor(data.h5f['confounder'][:], dtype=torch.bool)
@@ -1628,7 +1509,7 @@ class CausalRepertoireModel(nn.Module):
             # AUC.
             results['bind_effect_auc_class_' + str(mc)] = roc_auc_score(hit_sub, effect_sub)
             results['bind_effect_abs_auc_class_' + str(mc)] = roc_auc_score(hit_sub, effect_sub.abs())
-            # Baselines. TODO: could look up the exact confidence interval formula for PR-AUC and AUC, if they exist.
+            # Baselines.
             baseline_samples = self.args.baseline_samples
             pr_auc_baselines = np.zeros(baseline_samples)
             auc_baselines = np.zeros(baseline_samples)
@@ -1685,12 +1566,12 @@ class CausalRepertoireModel(nn.Module):
 def main(args):
 
     # Set up logging.
-    aim_run = create_run('cir-model2', args)
+    aim_run = create_run('caire-model', args)
     if args.log_output is not None:
         with open(args.log_output, 'a') as lof:
             lof.write('{},{}\n'.format(args.split_choice, aim_run['local_dir']))
 
-    # Use gpu w/most available memory. # TODO: refactor out of main.
+    # Use gpu w/most available memory.
     free_mem = np.zeros(torch.cuda.device_count())
     for j in range(torch.cuda.device_count()):
         with torch.cuda.device(j):
@@ -1717,31 +1598,22 @@ def main(args):
     args.low_dtype = getattr(torch, args.low_dtype)
 
     # Load data for training.
+    # Note: this random number generator is used for the subunit (sequence) batching.
     data_gen_M = torch.Generator(device=data_device).manual_seed(args.data_seed)
-    if not args.deeprc_data:
-        train_data = RepertoiresDataset(args.datafile, outcome_type=args.outcome, flip_outcome=args.flip_outcome,
-                                        seq_batch=args.subunit_batch, uniform_sample_seq=args.uniform_sample_seq,
-                                        dtype=args.low_dtype, generator=data_gen_M, cuda_data=args.cuda_data,
-                                        cuda=args.cuda, synthetic_test=args.synthetic_test)
-        # Consider deprecating: this does not need to be separate if the batch size for training and evaluation are the same.
-        validate_data = RepertoiresDataset(args.datafile, outcome_type=args.outcome, flip_outcome=args.flip_outcome,
-                                           seq_batch=args.subunit_batch_eval, uniform_sample_seq=args.uniform_sample_seq,
-                                           dtype=args.low_dtype, generator=data_gen_M, cuda_data=args.cuda_data,
-                                           cuda=args.cuda, synthetic_test=args.synthetic_test)
-    else:
-        # Deprecated.
-        # Datasets from DeepRC are useful for debugging.
-        train_data = DeepRCDataset(args.datafile, args.deeprc_outcome_file, seq_batch=args.subunit_batch, dtype=args.low_dtype,
-                                   generator=data_gen_M, cuda_data=args.cuda_data, cuda=args.cuda,
-                                   synthetic_test=args.synthetic_test)
-        validate_data = DeepRCDataset(args.datafile, args.deeprc_outcome_file, seq_batch=args.subunit_batch_eval, dtype=args.low_dtype,
-                                      generator=data_gen_M, cuda_data=args.cuda_data, cuda=args.cuda,
-                                      synthetic_test=args.synthetic_test)
+    train_data = RepertoiresDataset(args.datafile, outcome_type=args.outcome, flip_outcome=args.flip_outcome,
+                                    seq_batch=args.subunit_batch, uniform_sample_seq=args.uniform_sample_seq,
+                                    dtype=args.low_dtype, generator=data_gen_M, cuda_data=args.cuda_data,
+                                    cuda=args.cuda, synthetic_test=args.synthetic_test)
+    validate_data = RepertoiresDataset(args.datafile, outcome_type=args.outcome, flip_outcome=args.flip_outcome,
+                                       seq_batch=args.subunit_batch_eval, uniform_sample_seq=args.uniform_sample_seq,
+                                       dtype=args.low_dtype, generator=data_gen_M, cuda_data=args.cuda_data,
+                                       cuda=args.cuda, synthetic_test=args.synthetic_test)
 
     # Initialize model.
     model = CausalRepertoireModel(args, train_data)
 
     # Train-validate-test split.
+    # Note: this random number generator is used for the unit (patient) batching.
     data_gen_N = torch.Generator().manual_seed(args.data_seed+1000)
     splits = args.splits
     split_choice = args.split_choice
@@ -1749,7 +1621,6 @@ def main(args):
     train_choice = [c for c in list(range(splits)) if c not in [split_choice, validate_choice]]
     if args.stratify_cv:
         # Stratify splits so they have roughly even numbers of each outcome.
-        # Warning: right now this is only implemented for the Snyder et al. dataset.
         test_ind, validate_ind, train_ind = [], [], []
         for oi, rout in enumerate(torch.unique(train_data.outcomes)):
             splits_inds = random_split(torch.arange(len(train_data))[torch.isclose(train_data.outcomes.squeeze(), rout)],
@@ -1781,7 +1652,6 @@ def main(args):
                            f"{model.best_model}_{elem}.pt")
 
         # Save validation results.
-        # TODO: update for SWA.
         result_summary = (float(model.validation_score), float(model.validation_select_accuracy_mean),
                           float(model.validation_propensity_pearson_mean), float(model.validation_outcome_score),
                           float(model.elbo_average), float(model.convergence_diagnostic),)
@@ -1792,16 +1662,10 @@ def main(args):
 
     if not args.no_test_set_evaluation:
         # Load data for embedding and evaluation.
-        if not args.deeprc_data:
-            data = RepertoiresDataset(args.datafile, outcome_type=args.outcome, flip_outcome=args.flip_outcome,
-                                      seq_batch=args.subunit_batch_eval, uniform_sample_seq=args.uniform_sample_seq,
-                                      dtype=args.low_dtype, generator=data_gen_M, cuda_data=args.cuda_data, cuda=args.cuda,
-                                      synthetic_test=args.synthetic_test)
-        else:
-            # Deprecated.
-            data = DeepRCDataset(args.datafile, args.deeprc_outcome_file, seq_batch=args.subunit_batch_eval, dtype=args.low_dtype,
-                                 generator=data_gen_M, cuda_data=args.cuda_data, cuda=args.cuda,
-                                 synthetic_test=args.synthetic_test)
+        data = RepertoiresDataset(args.datafile, outcome_type=args.outcome, flip_outcome=args.flip_outcome,
+                                  seq_batch=args.subunit_batch_eval, uniform_sample_seq=args.uniform_sample_seq,
+                                  dtype=args.low_dtype, generator=data_gen_M, cuda_data=args.cuda_data, cuda=args.cuda,
+                                  synthetic_test=args.synthetic_test)
 
         # Take just-trained model or pre-trained model. If early stopping is on, the best_model parameters aren't
         # necessarily the final model parameters.
@@ -1907,14 +1771,11 @@ class DefaultArgs:
         self.pretrained_model_params = None
 
         self.synthetic_test = False
-        self.deeprc_data = False
-        self.deeprc_outcome_file = ''
 
         self.sum_pool = False
         self.no_attention = False
         self.encoder_no_attention = False
         self.linear_cnn = False
-        self.flexible_encoder = False
 
         self.anneal_time = False
         self.weight_decay = 0.
@@ -1922,11 +1783,7 @@ class DefaultArgs:
         self.weight_average = False
         self.weight_fraction = 0.75
         self.monitor_converge = False
-        self.neural_lr = 0.001
 
-        self.drc_seq_counts = False
-
-        self.no_pool_select = False
         self.select_posterior_rank = 0
         self.approx_batch_standardize = False
         self.uniform_sample_seq = False
@@ -1940,15 +1797,6 @@ class DefaultArgs:
         self.eval_effect_dist = False
 
         self.log_output = None
-
-        # Deprecated.
-        self.transformer_nhead = 1
-        self.transformer_dimff = 32
-        self.invariant = False
-        self.architecture = 'cnn'
-        self.no_embedding = False
-        self.test_split = 0.2
-        self.validate_split = 0.1
 
 
 if __name__ == "__main__":
@@ -2047,13 +1895,12 @@ if __name__ == "__main__":
                         help='Use ELBO for early stopping, rather than an accuracy-based metric.')
     parser.add_argument('--max-time', default=defaults.max_time, type=float,
                         help='Maximum training time, in minutes.')
-    parser.add_argument('--smoke', default=defaults.smoke, action="store_true", help='Smoke test.')
     parser.add_argument('--no-test-set-evaluation', default=defaults.no_test_set_evaluation,
                         action="store_true", help='Do not perform final model evaluation on test set.')
     parser.add_argument('--pretrained-model-params', default=defaults.pretrained_model_params,
                         help='Do not train, instead just evaluate a pretrained model with the given parameters.')
 
-    # Extra training parameters.
+    # Additional training parameters.
     parser.add_argument('--weight-decay', default=defaults.weight_decay, type=float)
     parser.add_argument('--no-early-stop', default=defaults.no_early_stop, action="store_true")
     parser.add_argument('--weight-average', default=defaults.weight_average, action="store_true",
@@ -2084,32 +1931,10 @@ if __name__ == "__main__":
     parser.add_argument('--eval-effect-dist', default=defaults.eval_effect_dist, action="store_true",
                         help='Evaluate the distribution of estimated effects for patient repertoires.')
 
-    # Extra tests (deprecated?)
+    # Additional tools for testing code.
+    parser.add_argument('--smoke', default=defaults.smoke, action="store_true", help='Smoke test.')
     parser.add_argument('--synthetic-test', default=defaults.synthetic_test, action="store_true",
-                        help='Synthetic data test (motif injection).')
-    parser.add_argument('--deeprc-data', default=defaults.deeprc_data, action="store_true",
-                        help='Use preprocessed CMV dataset from DeepRC.')
-    parser.add_argument('--deeprc-outcome-file', default=defaults.deeprc_outcome_file, type=str)
-
-    # Deprecated.
-    parser.add_argument('--flexible-encoder', default=defaults.flexible_encoder, action="store_true",
-                        help='Use more flexible encoder, rather than one focused on selection.')
-    parser.add_argument('--drc-seq-counts', default=defaults.drc_seq_counts, action="store_true",
-                        help='Use sequence counts as in DeepRC, rather than hierarchical model correction.')
-    parser.add_argument('--no-pool-select', default=defaults.no_pool_select, action="store_true")
-
-    parser.add_argument('--neural-lr', default=defaults.neural_lr, type=float,
-                        help='Learning rate for neural network parameters.')
-    parser.add_argument('--invariant', default=defaults.invariant, action="store_true")
-    parser.add_argument('--architecture', default=defaults.architecture)
-    parser.add_argument('--transformer-nhead', default=defaults.transformer_nhead, type=int,
-                        help='Must divide into number of letters (plus 3 if using positional encoding)')
-    parser.add_argument('--transformer-dimff', default=defaults.transformer_dimff, type=int)
-    parser.add_argument('--no-embedding', default=defaults.no_embedding, action="store_true",
-                        help='Map sequence embedding to scalar before averaging, instead of after, to get repertoire embedding.')
-    parser.add_argument('--test-split', default=defaults.test_split, type=float, help='Fraction of units for test set.')
-    parser.add_argument('--validate-split', default=defaults.validate_split, type=float,
-                        help='Fraction of units for validation set.')
+                        help='Perform simple synthetic data test, for sanity checks (inject motif into data).')
 
     args0 = parser.parse_args()
 
