@@ -1,3 +1,9 @@
+"""
+Set up experiment managing and tracking for CAIRE.
+
+The function create_run initializes a run in aim (an experiment tracking tool).
+"""
+
 from aim import Run
 import os
 import randomname

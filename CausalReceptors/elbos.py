@@ -1,3 +1,13 @@
+"""
+ELBO and SVI functions for use in training CAIRE.
+
+These are very small modifications of the same functions implemented in Pyro. The purpose
+of the modifications is to cut out unnecessary gpu -> cpu transfers.
+Such transfers can slow down model training (though in this case removing these transfers is more important
+in terms of debugging, as it helps find other, larger gpu -> cpu transfers).
+"""
+
+
 import torch
 import pyro
 from pyro.infer import JitTrace_ELBO
@@ -22,7 +32,7 @@ def _compute_log_r(model_trace, guide_trace):
     return log_r
 
 class CudaJitTrace_ELBO(JitTrace_ELBO):
-
+    """Same as Pyro's SVI, but without an unnecessary .item call, which forces a gpu->cpu transfer."""
     def loss_and_surrogate_loss(self, model, guide, *args, **kwargs):
         kwargs["_pyro_model_id"] = id(model)
         kwargs["_pyro_guide_id"] = id(guide)
@@ -97,7 +107,7 @@ class CudaJitTrace_ELBO(JitTrace_ELBO):
 
 
 class CudaSVI(SVI):
-
+    """Same as Pyro's SVI, but without an unnecessary .item call, which forces a gpu->cpu transfer."""
     def step(self, *args, **kwargs):
         """
         :returns: estimate of the loss
