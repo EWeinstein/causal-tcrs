@@ -3,10 +3,21 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "causal-tcrs"
+name = "CausalReceptors"
 version = "2024-06"
-dependences = ["numpy==1.24"]
-requires-python = "==3.11"
+dependencies = [
+    "aim~=3.18",
+    "h5py~=3.7",
+    "numpy~=1.24",
+    "pytest~=7.3",
+    "pandas~=1.5",
+    "plotly~=5.16",
+    "pyro-ppl~=1.8",
+    "randomname~=0.2",
+    "scikit-learn~=1.2",
+    "torch~=2.0"
+]
+requires-python = "~=3.11"
 authors = [
     {name = "Eli N. Weinstein", email = "eli.n.weinstein@gmail.com"}
 ]
@@ -17,7 +28,7 @@ keywords = ["biological-sequences", "proteins", "probabilistic-models",
             "machine-learning", "immunology", "causal-inference"]
 classifiers = [
     "Development Status :: 3 - Alpha",
-    "Topic :: Scientific/Engineering :: Computational Biology",
+    "Topic :: Scientific/Engineering",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
 ]
