@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "causal-tcrs"
+version = "2024-06"
+dependences = ["numpy==1.24"]
+requires-python = "==3.11"
+authors = [
+    {name = "Eli N. Weinstein", email = "eli.n.weinstein@gmail.com"}
+]
+description = "Estimating the causal effects of T cell receptors."
+readme = "README.md"
+license = {text = "MIT License"}
+keywords = ["biological-sequences", "proteins", "probabilistic-models",
+            "machine-learning", "immunology", "causal-inference"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Topic :: Scientific/Engineering :: Computational Biology",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+]
+
+[project.urls]
+Repository = "https://github.com/EWeinstein/causal-tcrs"
