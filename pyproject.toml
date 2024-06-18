@@ -33,5 +33,10 @@ classifiers = [
     "Programming Language :: Python :: 3",
 ]
 
+[project.optional-dependencies]
+pre = ["biopython~=1.81"]
+synth = []
+covid = []
+
 [project.urls]
 Repository = "https://github.com/EWeinstein/causal-tcrs"
