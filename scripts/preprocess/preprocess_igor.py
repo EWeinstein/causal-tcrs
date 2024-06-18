@@ -12,7 +12,6 @@ The code performs the following steps:
 """
 
 
-
 import aim
 import argparse
 import numpy as np
@@ -252,7 +251,7 @@ def main(args):
     processed_file = os.path.join(args.out, 'preprocessed_igor.hdf5')
     run['processed_file'] = processed_file
 
-    # Process metadata.
+    # -- Process metadata. --
     if args.datasource == 'emerson':
         # Preprocessing for the Emerson et al. (2017) CMV dataset.
         # Initial setup: make the processed file and instantiate with list of repertoire files.
