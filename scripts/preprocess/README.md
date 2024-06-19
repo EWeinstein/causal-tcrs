@@ -14,12 +14,12 @@ To install the python package dependencies for these scripts, you can install th
 pip install -e '.[pre]'
 ```
 
-Preprocessing uses [IGoR](https://github.com/qmarcou/IGoR). 
+Preprocessing uses IGoR, which can be downloaded and installed [here](https://github.com/qmarcou/IGoR). 
 It was run with IGoR version 1.4.0, patched following this [issue](https://github.com/qmarcou/IGoR/issues/68).
 
 ## Workflows
 
-The workflow for preparing the Snyder et al. COVID [dataset](https://clients.adaptivebiotech.com/pub/covid-2020) was:
+The workflow for preparing the [Snyder et al. COVID dataset](https://clients.adaptivebiotech.com/pub/covid-2020) was:
 
 ```
 preprocess_snyder.sh
@@ -27,7 +27,7 @@ preprocess_snyder_patch.sh
 preprocess_snyder_mira.sh
 ```
 
-The workflow for preparing the Emerson et al. CMV [dataset](https://clients.adaptivebiotech.com/pub/emerson-2017-natgen), 
+The workflow for preparing the [Emerson et al. CMV dataset](https://clients.adaptivebiotech.com/pub/emerson-2017-natgen), 
 used to create semisynthetic data, was:
 ```
 preprocess_emerson.sh
