@@ -1,5 +1,5 @@
 """
-Preprocessing code specific to the Emerson et al. (2017) dataset.
+Preprocessing code specifically for the Emerson et al. (2017) dataset.
 """
 
 import json

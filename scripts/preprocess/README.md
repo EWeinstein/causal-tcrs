@@ -11,7 +11,7 @@ is likely by modifying the "Process metadata" section of `preprocess_igor.py` (l
 To install the python package dependencies for these scripts, you can install the main package with an additional option:
 
 ```
-pip install CausalReceptors[pre]
+pip install -e '.[pre]'
 ```
 
 Preprocessing uses [IGoR](https://github.com/qmarcou/IGoR). 

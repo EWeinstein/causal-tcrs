@@ -6,18 +6,17 @@ build-backend = "hatchling.build"
 name = "CausalReceptors"
 version = "2024-06"
 dependencies = [
-    "aim~=3.18",
+    "aim~=3.18.1",
     "h5py~=3.7",
-    "numpy~=1.24",
-    "pytest~=7.3",
-    "pandas~=1.5",
-    "plotly~=5.16",
-    "pyro-ppl~=1.8",
-    "randomname~=0.2",
-    "scikit-learn~=1.2",
-    "torch~=2.0"
+    "numpy~=1.24.3",
+    "pandas~=1.5.3",
+    "plotly~=5.16.0",
+    "pyro-ppl~=1.8.4",
+    "randomname~=0.2.1",
+    "scikit-learn~=1.2.2",
+    "torch~=2.0.1"
 ]
-requires-python = "~=3.11"
+requires-python = "~=3.11.7"
 authors = [
     {name = "Eli N. Weinstein", email = "eli.n.weinstein@gmail.com"}
 ]
@@ -34,7 +33,9 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-pre = ["biopython~=1.81"]
+test = ["pytest~=7.3.1"]
+pre = ["biopython~=1.81",
+       "chardet~=5.1.0"]
 synth = []
 covid = []
 
