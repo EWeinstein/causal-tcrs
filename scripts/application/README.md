@@ -26,3 +26,7 @@ Further exploratory analysis of CAIRE can be found in `Snyder_2020_MIRA_effect_s
 The above scripts were anonymized as follows: 
 - `PACKAGE_PATH` denotes the path to this package (the folder containing causal-tcrs)
 - `SNYDER_PATH` denotes the path to the preprocessed Snyder et al. data
+
+### Compute
+
+The total time to train and evaluate the models was several days, using an NVIDIA A100 GPU and 8 cpus.
