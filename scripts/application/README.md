@@ -19,6 +19,9 @@ The scripts for the models evaluated in the paper are:
 - `cross_validate_noselect.sh` the uncorrected model
 - `cross_validate_simple.sh` the simplified non-neural CAIRE model
 
+Analyses comparing the results of the different models can be found in `Snyder_2020_MIRA_effect_summary.ipynb`.
+Further exploratory analysis of CAIRE can be found in `Snyder_2020_MIRA_effect_summary.ipynb`.
+
 ### Paths
 The above scripts were anonymized as follows: 
 - `PACKAGE_PATH` denotes the path to this package (the folder containing causal-tcrs)
