@@ -1,6 +1,6 @@
 # Semisynthetic experiments
 
-This folder contains scripts that were used to perform the semisynthetic data studies used to evaluate CAIRE.
+This folder contains scripts that were used to perform the semisynthetic data studies.
 
 ## Dependencies
 To install the python package dependencies for these scripts,

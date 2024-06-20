@@ -1,6 +1,6 @@
 # Application: COVID-19 Severity
 
-This folder contains scripts and notebooks used to perform the study of TCR effects on COVID severity.
+This folder contains scripts and notebooks that were used to perform the study of TCR effects on COVID severity.
 
 ## Dependencies
 To install the python package dependencies for these scripts,
@@ -26,6 +26,7 @@ Further exploratory analysis of CAIRE can be found in `Snyder_2020_MIRA_effect_s
 The above scripts were anonymized as follows: 
 - `PACKAGE_PATH` denotes the path to this package (the folder containing causal-tcrs)
 - `SNYDER_PATH` denotes the path to the preprocessed Snyder et al. data
+Additional paths are set in the notebooks.
 
 ### Compute
 
