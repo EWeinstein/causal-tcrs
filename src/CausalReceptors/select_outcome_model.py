@@ -1573,26 +1573,19 @@ def main(args):
     # Check distribution arguments. Good for debugging, but slows down code on the gpu.
     pyro.enable_validation(args.no_jit)
 
-    # Store the data set on the gpu or the cpu.
-    if args.cuda_data:
-        # Deprecated, can remove option.
-        data_device = 'cuda'
-    else:
-        data_device = 'cpu'
-
     # Set first-layer dtype (can be a lower precision than float32 for faster training.)
     args.low_dtype = getattr(torch, args.low_dtype)
 
     # Load data for training.
     # Note: this random number generator is used for the subunit (sequence) batching.
-    data_gen_M = torch.Generator(device=data_device).manual_seed(args.data_seed)
+    data_gen_M = torch.Generator(device='cpu').manual_seed(args.data_seed)
     train_data = RepertoiresDataset(args.datafile, outcome_type=args.outcome, flip_outcome=args.flip_outcome,
                                     seq_batch=args.subunit_batch, uniform_sample_seq=args.uniform_sample_seq,
-                                    dtype=args.low_dtype, generator=data_gen_M, cuda_data=args.cuda_data,
+                                    dtype=args.low_dtype, generator=data_gen_M,
                                     cuda=args.cuda, synthetic_test=args.synthetic_test)
     validate_data = RepertoiresDataset(args.datafile, outcome_type=args.outcome, flip_outcome=args.flip_outcome,
                                        seq_batch=args.subunit_batch_eval, uniform_sample_seq=args.uniform_sample_seq,
-                                       dtype=args.low_dtype, generator=data_gen_M, cuda_data=args.cuda_data,
+                                       dtype=args.low_dtype, generator=data_gen_M,
                                        cuda=args.cuda, synthetic_test=args.synthetic_test)
 
     # Initialize model.
@@ -1650,7 +1643,7 @@ def main(args):
         # Load data for embedding and evaluation.
         data = RepertoiresDataset(args.datafile, outcome_type=args.outcome, flip_outcome=args.flip_outcome,
                                   seq_batch=args.subunit_batch_eval, uniform_sample_seq=args.uniform_sample_seq,
-                                  dtype=args.low_dtype, generator=data_gen_M, cuda_data=args.cuda_data, cuda=args.cuda,
+                                  dtype=args.low_dtype, generator=data_gen_M, cuda=args.cuda,
                                   synthetic_test=args.synthetic_test)
 
         # Take just-trained model or pre-trained model. If early stopping is on, the best_model parameters aren't
@@ -1665,7 +1658,7 @@ def main(args):
             data_eval_effect_dist = RepertoiresDataset(
                     args.datafile, outcome_type=args.outcome, flip_outcome=args.flip_outcome,
                     seq_batch=args.subunit_batch, uniform_sample_seq=args.uniform_sample_seq,
-                    dtype=args.low_dtype, generator=data_gen_M, cuda_data=args.cuda_data,
+                    dtype=args.low_dtype, generator=data_gen_M,
                     cuda=args.cuda, synthetic_test=args.synthetic_test,
                     deterministic_batch=True)
         else:
@@ -1746,7 +1739,6 @@ class DefaultArgs:
         self.profile = False
         self.no_jit = False
         self.low_dtype = 'bfloat16'
-        self.cuda_data = False
         self.no_tf32 = False
         self.num_workers = 0
         self.num_torch_threads = 1
@@ -1869,8 +1861,6 @@ if __name__ == "__main__":
                         help='No Jit ELBO.')
     parser.add_argument('--low-dtype', default=defaults.low_dtype, type=str,
                         help='Lower precision dtype (float32, float16 OR bfloat16.')
-    parser.add_argument('--cuda-data', default=defaults.cuda_data, action="store_true",
-                        help='Store data on the gpu.')
     parser.add_argument('--no-tf32', default=defaults.no_tf32, action="store_true",
                         help='Use TensorFloat-32 tensor cores.')
     parser.add_argument('--num-workers', default=defaults.num_workers, type=int,
