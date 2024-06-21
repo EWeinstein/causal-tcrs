@@ -56,7 +56,7 @@ Optionally, it may contain:
 
 It also must contain the metadata fields
 - `['metadata'].attrs['nsamples']` (int) - total number of patients 
-- `['metadata'].attrs['aa_alphabet']` (string) - the amino acid alphabet, in the order used for sequence encoding; the final letter should correspond to padding character, e.g. '*'
+- `['metadata'].attrs['aa_alphabet']` (string) - the amino acid alphabet, in the order used for sequence encoding; plus, the final letter should correspond to a padding character, such as '*'
 - `['metadata'].attrs['max_len']` (int) - the maximum sequence length
 - `['metadata'].attrs['seq_nums']` (int vector) - the number of sequences for each mature repertoire
   - This is a vector of integers of size N, where N is the number of patients
