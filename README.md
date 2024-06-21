@@ -52,7 +52,7 @@ Optionally, it may contain:
 - `['productive_freq']` (float vector) - the frequencies of each mature repertoire TCR sequences
   - This is a vector of floats of size S, where S is the total number of sequences
   - The sequences are grouped by patients, as for `['productive_aa']`. Typically, they will sum to 1 for each patient (though before training, the frequencies will be rescaled to sum to one exactly)
-  - This field is used for repertoire datasets in which each unique TCR sequence is recorded exactly once, along with an estimate of how common the sequence is among all productive TCRs 
+  - This field is used for repertoire datasets in which each unique TCR sequence is recorded exactly once, but there is an estimate of how common the sequence is among all productive TCRs 
 
 It also must contain the metadata fields
 - `['metadata'].attrs['nsamples']` (int) - total number of patients 
