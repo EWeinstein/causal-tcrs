@@ -1,3 +1,6 @@
 .idea
 *-checkpoint.ipynb
 /scripts/application/.ipynb_checkpoints/Snyder_2020_MIRA_effect_analysis2-checkpoint.ipynb 2
+.ipynb_checkpoints
+caire-model
+example_local.sh

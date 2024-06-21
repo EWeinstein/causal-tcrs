@@ -12,15 +12,14 @@ The code is divided into two main folders.
 
 ## Installation
 
-The package can be installed by running from the project directory
+The package can be installed in a `python=3.11` virtual environment by running from the project directory
 
 ```
 pip install CausalReceptors
 ```
 
-**Dependencies**: `pyproject.toml` specifies the dependency versions that were used for the experiments in the paper 
-(under `[project] dependencies`), 
-but also allows for compatible releases. 
+**Dependencies**: `pyproject.toml` specifies exactly the dependency versions that were used for the experiments in the paper 
+(under `[project] dependencies`), but also allows for compatible releases. 
 The code has not been tested with other versions of these packages.
 
 ## Data
@@ -75,9 +74,21 @@ For further details, see the dataset class `RepertoiresDataset` in `src/CausalRe
 
 An example running CAIRE on the COVID dataset can be found in `example.sh`.
 To run this example, you will need to set `DATA_PATH` to the location of the preprocessed Snyder et al. (2020) COVID dataset.
+The script takes roughly 15 minutes to run using an A100 GPU and 8 CPUs.
+The model is not set up to run without a GPU.
+(You can shorten the time with `--max-time`, which sets the maximum training time in minutes. 
+There will still be roughly 5 minutes of setup and evaluation.)
+
+You can monitor the model's training using [aim](https://aimstack.readthedocs.io/en/latest/quick_start/setup.html#browsing-results-with-aim-ui): 
+run `aim up` from the newly created `caire-model` subdirectory. You should see the metric `elbo_validate` increase and converge.
+
+The notebook `example.ipynb` opens and summarizes the results, reporting CAIRE's estimate of the typical causal effects of TCRs on COVID severity.
+(You can install the dependencies for opening this notebook by running `pip install -e '.[ex]'`.)
+
+Examples of more complex analyses can be found in `scripts/application`.
 
 ## Additional scripts
 
-The scripts that were used for the analyses presented in the paper can be found in `scripts`. 
-Note these are provided as a record of what was done in the paper,
-and have not been prepared for reuse.
+The scripts that were used for the analyses presented in the paper can be found in `scripts`. They have been modified slightly to add clarifying comments, remove irrelevant components, and anonymize paths.
+Note these scripts are provided as a record of what was done in the paper, and as an example of how to use CAIRE;
+they have not been prepared for reuse.
