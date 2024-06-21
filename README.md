@@ -28,7 +28,7 @@ The code has not been tested with other versions of these packages.
 The preprocessed datasets used for the paper can be downloaded from TODO. 
 
 The file TODO, once unzipped, contains
-- `igor-snyder/preprocessed_igor.hdf5` - preprocessed Snyder et al. (2020) dataset
+- `igor-snyder/preprocessed_igor.hdf5` - preprocessed Snyder et al. (2020) COVID dataset
 - `igor-snyder/peptide-ci.csv`, `igor-snyder/peptide-cii.csv` - preprocessed Snyder et al. (2020) MIRA assay hit metadata
 The file TODO, once unzipped, contains 
 - `igor-emerson/preprocessed_igor.hdf5` - preprocessed Emerson et al. (2017) dataset, used for semisynthetic data generation
@@ -73,8 +73,8 @@ For further details, see the dataset class `RepertoiresDataset` in `src/CausalRe
 
 ## Example
 
-For `igor-snyder/preprocessed_igor.hdf5`, these are severity scores, with 0 indicating mild disease, 1 moderate, and 2 severe disease.
-
+An example running CAIRE on the COVID dataset can be found in `example.sh`.
+To run this example, you will need to set `DATA_PATH` to the location of the preprocessed Snyder et al. (2020) COVID dataset.
 
 ## Additional scripts
 
