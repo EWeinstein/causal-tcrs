@@ -24,13 +24,15 @@ The code has not been tested with other versions of these packages.
 
 ## Data
 
-The preprocessed datasets used for the paper can be downloaded from TODO. 
+The preprocessed datasets used for the paper can be downloaded from [this Google Drive folder](https://drive.google.com/drive/folders/1m4XrrKvVYKg97kV12-qkhlOKvx5cblkK?usp=drive_link). 
 
-The file TODO, once unzipped, contains
-- `igor-snyder/preprocessed_igor.hdf5` - preprocessed Snyder et al. (2020) COVID dataset
-- `igor-snyder/peptide-ci.csv`, `igor-snyder/peptide-cii.csv` - preprocessed Snyder et al. (2020) MIRA assay hit metadata
-The file TODO, once unzipped, contains 
-- `igor-emerson/preprocessed_igor.hdf5` - preprocessed Emerson et al. (2017) dataset, used for semisynthetic data generation
+The file `igor-snyder/processed_covid.tar.gz`, once unzipped, contains preprocessed data from the Snyder et al. (2020) COVID study
+- `preprocessed_igor.hdf5` - main dataset used for CAIRE training
+- `peptide-ci.csv`, `peptide-cii.csv` - additional MIRA assay hit metadata
+- `preprocessed_metadata.tsv` - additional patient metadata
+
+The file `igor-emerson/processed_semisynth.tar.gz`, once unzipped, contains `preprocessed_igor.hdf5`. 
+This is preprocessed data from the Emerson et al. (2017) CMV study, which was used for generating semisynthetic datasets.
 
 ## Data format
 
