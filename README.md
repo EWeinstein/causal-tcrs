@@ -2,7 +2,8 @@
 This repository contains code for the paper:
 
 > **Estimating the Causal Effects of T Cell Receptors**  
-> Eli N. Weinstein, Elizabeth B. Wood, David M. Blei  
+> Eli N. Weinstein, Elizabeth B. Wood, David M. Blei
+> https://arxiv.org/abs/2410.14127 
 > 2024
 
 The code is divided into two main folders. 
